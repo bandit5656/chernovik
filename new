@@ -1,0 +1,864 @@
+import { createServerFn } from "@tanstack/react-start";
+import { getRequestHeader } from "@tanstack/react-start/server";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { z } from "zod";
+import type { Database } from "@/integrations/supabase/types";
+
+// ==========================================
+// КОНСТАНТЫ И КОНФИГУРАЦИЯ
+// ==========================================
+
+const NICHE_LABEL: Record<string, string> = {
+  beauty: "Бьюти-мастер (маникюр, педикюр, брови, ресницы, косметология)",
+  rows_lashes: "Мастер по бровям и ресницам (оформление, ламинирование, наращивание)",
+  nails: "Мастер ногтевого сервиса (маникюр, педикюр, гель-лак, дизайн, подология)",
+  hair: "Парикмахер-стилист (стрижки, окрашивание, уходы, укладки)",
+  makeup: "Визажист (дневной, вечерний, свадебный макияж, образ)",
+  permanent_makeup: "Мастер перманентного макияжа (губы, брови, межресничка)",
+  depilation: "Мастер депиляции и эпиляции (шугаринг, воск, лазер, электроэпиляция)",
+  epilation_laser: "Мастер лазерной эпиляции и депиляции (шугаринг, воск, лазер)",
+  cosmetology: "Эстетический косметолог (чистки, пилинги, инъекции, уход)",
+  massage_spa: "Массажист / Мастер коррекции фигуры (SPA, массаж)",
+  massage_body: "Массажист / Мастер коррекции фигуры (SPA, массаж)",
+  tattoo: "Тату-мастер (мини-тату, графика, цветные работы, перекрытия)",
+};
+
+const RANDOM_ANGLES = [
+  "Сделай упор на визуальный результат, аккуратность и свежесть работы.",
+  "Подай материал через экспертный совет по домашнему уходу и сохранению эффекта.",
+  "Раскрой технику работы, стерильность и безопасность материалов.",
+  "Зайди через развенчание частых страхов клиентов и мифов о процедуре.",
+  "Сфокусируйся на премиальных составах, комфорте и эстетике процесса.",
+  "Подай тему в формате 'живой разбор случая' или важной детали, которую замечают мастера.",
+  "Зайди через экономию времени и сил клиента в обычной жизни.",
+  "Подай через сравнение: как выглядит работа мастера и как — попытка сделать это самостоятельно.",
+  "Сделай акцент на выгоде и комфорте предложения без выдумывания дедлайнов.",
+  "Зайди через маленькую деталь сервиса, которую клиенты отмечают чаще всего."
+];
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function pickManyRandom<T>(arr: T[], count: number): T[] {
+  const copy = [...arr];
+  const out: T[] = [];
+  while (copy.length > 0 && out.length < count) {
+    out.push(copy.splice(Math.floor(Math.random() * copy.length), 1)[0]);
+  }
+  return out;
+}
+
+function getRandomAngle(): string {
+  return pickRandom(RANDOM_ANGLES);
+}
+
+const INTRO_STRATEGIES = [
+  "Начни 1-й абзац с описания конкретной выгоды или атмосферы визита.",
+  "Начни 1-й абзац сразу с технического описания результата и эстетики работы.",
+  "Начни 1-й абзац с условия предложения или ключевой ценности процедуры.",
+  "Начни 1-й абзац с факта о том, как процедура упрощает ежедневный уход или экономит время.",
+  "Начни 1-й абзац с прямого обращения к ситуации клиента, без разгона и общих слов.",
+  "Начни 1-й абзац с конкретики из деталей: условие предложения или ключевой результат.",
+  "Начни 1-й абзац с короткого вопроса читателю и сразу дай ответ во втором предложении.",
+  "Начни 1-й абзац с факта о результате, который видно уже после первой процедуры.",
+];
+
+function getRandomIntroStrategy(): string {
+  return pickRandom(INTRO_STRATEGIES);
+}
+
+// Пул форматов заголовков для обычных постов
+const TITLE_FORMATS = [
+  "Заголовок-оффер: сразу называет выгоду или условие предложения.",
+  "Заголовок-вопрос: короткий вопрос, который бьет в задачу клиента.",
+  "Заголовок-результат: называет конечный эффект работы без глаголов-связок.",
+  "Заголовок-контраст: строится по схеме [Результат] БЕЗ [Проблема/Условие].",
+  "Заголовок-двоеточие: [Услуга/Процедура]: [Результат или стиль].",
+  "Заголовок-приглашение: прямое обращение к читателю с призывом занять место.",
+  "Заголовок-инсайт: короткая экспертная мысль, которая цепляет неожиданностью.",
+  "Заголовок-перечисление: два коротких смысловых блока через тире или запятую.",
+];
+
+// Пул креативных форматов ДЛЯ АКЦИЙ И СКИДОК (БЕЗ ЖЕСТКИХ ВЫДУМАННЫХ ЦИФР)
+const OFFER_TITLE_FORMATS = [
+  "Креативный оффер через ценность и выгоду предложения.",
+  "Заголовок-приглашение на совместную или повторную запись.",
+  "Заголовок через результат и приятный бонус к процедуре.",
+  "Заголовок-призыв занять свободное время.",
+  "Заголовок через проблему и лёгкое решение с акцией."
+];
+
+function getRandomTitleFormat(isOffer = false): string {
+  return isOffer ? pickRandom(OFFER_TITLE_FORMATS) : pickRandom(TITLE_FORMATS);
+}
+
+const IDEA_FORMATS = [
+  "Экспертный разбор мифа или частой ошибки клиентов.",
+  "Трендовая техника или дизайн этого сезона.",
+  "Лайфхак по домашнему уходу и продлению результата.",
+  "Закулисье: почему мастер работает именно так (безопасность, материалы, носка).",
+  "Продающий кейс «было — стало» с фокусом на результат.",
+  "Ответ на неудобный вопрос клиента (цена, боль, время процедуры).",
+  "Чек-лист подготовки к записи или к процедуре.",
+  "Сравнение двух техник или вариантов услуги: кому что подходит.",
+  "Пост-подборка образов под конкретный повод (отпуск, свадьба, съемка, работа).",
+  "Личная позиция мастера: за что он не берется и почему.",
+];
+
+const NO_DIMINUTIVES_RULES = `
+СТРОГИЙ ЗАПРЕТ НА УМЕНЬШИТЕЛЬНО-ЛАСКАТЕЛЬНЫЕ СЛОВА:
+1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать: "окошечка", "местечко", "ручки", "ноготочки", "реснички", "бровишки", "губки", "мастер-феечка", "красотули"!
+2. Используй нормальные взрослые слова: "окошки", "места", "руки", "ногтевой сервис", "брови", "ресницы", "клиенты".
+3. Дружелюбный тон — это уважительный и стильный диалог на равных, а не сюсюканье.
+`;
+
+const TONE_HINT: Record<string, string> = {
+  friendly: `ТОН — ДРУЖЕСКИЙ И ЖИВОЙ:
+- Пиши легко, эстетично и с уважением, как современный мастер с отличным вкусом.
+- ЕДИНООБРАЗИЕ ОБРАЩЕНИЯ: Используй строго обращение на "вы" (во множественном числе — к аудитории: "записывайтесь", "приходите", "выбирайте"). КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО смешивать в одном посте обращение на "ты" ("хочешь", "забери") и на "вы" ("записывайтесь")!
+- Фокус на заботе, комфорте и крутом результате.`,
+
+  professional: `ТОН — СТИЛЬНЫЙ И ДЕЛОВОЙ (УНИВЕРСАЛЬНЫЙ):
+- Текст должен быть эстетичным, лаконичным и уверенным. Без сухих канцелярских штампов и без унылой официальщины!
+- ГЕНДЕРНАЯ НЕЙТРАЛЬНОСТЬ: Пиши так, чтобы текст подходил И мастеру-мужчине, И мастеру-женщине, а также клиентам любого пола. Избегай глаголов в прошедшем времени и личных окончаний ("сделала/сделал", "обратилась/обратился").
+- Пиши через действия и результат: "В работе используется...", "Результат — ...", "Качественное покрытие позволяет...", "Запись открыта...".
+- Фокус на эстетике, стиле, точности техники, стерильности и премиальном сервисе.`,
+
+  emotional: `ТОН — ЯРКИЙ И ЭМОЦИОНАЛЬНЫЙ:
+- Напиши текст с энтузиазмом и фокусом на ВАУ-эффект и преображение.
+- Используй сочные слова ("стильно", "идеальный контур", "полный восторг"), но БЕЗ сюсюканья.
+- Передай эмоции и уверенность от идеального образа.`,
+};
+
+// Высший приоритет деталей и акций
+const CRITICAL_PROMPT_PRIORITY = `
+КРИТИЧЕСКИЙ ПРИОРИТЕТ ДЕТАЛЕЙ И АКЦИЙ:
+1. Поле "ДЕТАЛИ" имеет ВЫСШИЙ приоритет над художественным описанием! Все цифры, %, скидки, окошки и условия ИЗ ДЕТАЛЕЙ обязаны присутствовать в тексте.
+2. Если тип поста "Акция / Скидка" или "Свободные окошки", либо в деталях есть скидка/дата/окошки:
+   - Суть предложения должна быть понятна из ЗАГОЛОВКА или ПЕРВОГО АБЗАЦА.
+   - ИЗБЕГАЙ ДУБЛИРОВАНИЯ: Если заголовок звучит как "АКЦИЯ НА БРОВИ -10%", первая строчка текста НЕ должна повторять заголовок дословно! Она должна сразу объяснять условие или давать подробности (например: "Приводите подругу и получайте скидку на совместную запись...").
+   - В режиме "short" (МИНИ) исключай долгие вступления. Сразу давай схему: Заголовок -> Оффер со скидкой/окошками -> Призыв!
+`;
+
+// Инструкции для разных типов постов
+const POST_TYPE_INSTRUCTIONS: Record<string, string> = {
+  "Полезный совет": `ФОРМАТ "ПОЛЕЗНЫЙ СОВЕТ":
+- Начни с конкретного экспертного совета, чек-листа или инструкции по уходу/носке/процедуре (2-3 четких тезиса или шага).
+- Дай читателю реальную практическую ценность.
+- В КОНЦЕ ОБЯЗАТЕЛЬНО сделай мягкий переход к записи в Директ.`,
+
+  "Продающий": `ФОРМАТ "ПРОДАЮЩИЙ ПОСТ":
+- Фокус на боли клиента, решении через процедуру, ценности результата и прямом призыве записаться в Директ.`,
+
+  "Акция / Скидка": `ФОРМАТ "АКЦИЯ / СКИДКА":
+- Заголовок и первая строчка должны быть КРЕАТИВНЫМИ И РАЗНЫМИ! Не используй банальное "АКЦИЯ!".
+- Если в деталях есть цифры/условия — используй их дословно.
+- Первое предложение после заголовка сразу раскрывает механики (например, про условие для подруги или детали услуги).`,
+
+  "Свободные окошки": `ФОРМАТ "СВОБОДНЫЕ ОКОШКИ":
+- Информация о свободных датах/времени подается сразу и энергично.
+- Фокус на срочности и призыве занять место в Директ.`,
+
+  "FAQ": `ФОРМАТ "ВОПРОС-ОТВЕТ (FAQ)":
+- Ответь на 1 конкретный частый вопрос или опасение клиента, в конце — приглашение на запись.`,
+
+  "Задать тему": `ФОРМАТ "ПРОИЗВОЛЬНАЯ ТЕМА":
+- Раскрой тему по деталям мастера с финальным призывом к записи в Директ.`,
+};
+
+// Динамический контроль объема (РАЗДЕЛ «ТЕКСТ»)
+const MOBILE_LENGTH_LIMITS: Record<string, string> = {
+  short: `РЕЖИМ "МИНИ" (МАКСИМУМ 6 СТРОК, 170–260 СИМВОЛОВ):
+- ЖЕСТКИЙ ЛИМИТ: весь пост занимает НЕ БОЛЕЕ 6 строк, считая заголовок, пустые строки-разделители и призыв.
+- Длина всего текста: от 170 до 260 символов с пробелами.
+- Структура (5-6 строк):
+  1) Креативный заголовок ЗАГЛАВНЫМИ БУКВАМИ (2–5 полных слов) + эмодзи
+  2) пустая строка
+  3) 1 емкий абзац (1-2 коротких предложения с деталями акции/услуги).
+  4) пустая строка
+  5) короткий призыв к действию (1 предложение)`,
+
+  medium: `РЕЖИМ "СРЕДНИЙ" (МАКСИМУМ 12 СТРОК, 380–520 СИМВОЛОВ):
+- ЖЕСТКИЙ ЛИМИТ: весь пост занимает НЕ БОЛЕЕ 12 строк.
+- Длина всего текста: от 380 до 520 символов с пробелами.
+- Структура:
+  1) Заголовок ЗАГЛАВНЫМИ БУКВАМИ + эмодзи (3-6 слов)
+  2) пустая строка
+  3) Оффер/зачин: 1-2 предложения (раскрытие сути/акции без повтора заголовка)
+  4) пустая строка
+  5) Основная часть: 2-3 коротких предложения (польза, техника, результат)
+  6) пустая строка
+  7) Призыв записаться в Директ (1 предложение)`,
+
+  long: `РЕЖИМ "БОЛЬШОЙ" (МАКСИМУМ 18 СТРОК, 650–900 СИМВОЛОВ):
+- ЖЕСТКИЙ ЛИМИТ: весь пост занимает НЕ БОЛЕЕ 18 строк.
+- Длина всего текста: от 650 до 900 символов с пробелами.
+- Структура:
+  1) Заголовок ЗАГЛАВНЫМИ БУКВАМИ + эмодзи (4-7 слов)
+  2) пустая строка
+  3) 3 плотных абзаца по 2-3 предложения, разделенных пустыми строками
+  4) пустая строка
+  5) Финальный призыв к действию (1-2 предложения)`,
+};
+
+// Правила заголовков и защита от недописанных/сокращенных слов
+const TITLE_VARIETY_RULES = `
+ПРАВИЛА ГЕНЕРАЦИИ ЗАГОЛОВКОВ И СЛОВ:
+1. Заголовок от 3 до 6 слов, ЗАГЛАВНЫМИ БУКВАМИ, с эмодзи в конце.
+2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО СОКРАЩАТЬ И ОБРЫВАТЬ СЛОВА! Запрещены "бров.", "акц.", "ресн.", "след." и любые другие сокращения. Пиши только ПОЛНЫЕ СЛОВА.
+3. Первое предложение ПОСЛЕ заголовка НЕ должно дословно повторять заголовок! Развивай мысль дальше.
+4. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ заезженные заголовки: "НОВЫЙ ВЗГЛЯД", "ИДЕАЛЬНЫЕ БРОВИ", "КРАСОТА В ДЕТАЛЯХ", "ВАША КРАСОТА", "МАГИЯ ПРЕОБРАЖЕНИЯ", "СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ", "АКЦИЯ МЕСЯЦА". Будь креативнее!
+5. Эмодзи только из палитры: ✨ 🤍 💫 🖤 🌿 ⏳ 📌. ЗАПРЕЩЕНЫ: 💅 🔥 💥 😍 🥰 💃 ❤️‍Ф.
+`;
+
+const BENEFIT_VARIETY_RULES = `
+РОТАЦИЯ ЦЕННОСТИ И ФИНАЛЬНЫХ АКЦЕНТОВ:
+1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать шаблоны: "утренний макияж больше не занимает время", "подчеркнет вашу естественную красоту", "забудьте про тушь/карандаш"!
+2. Выбери СТРОГО 1 из фокусов:
+   - Чистота и аккуратность (ровные линии, безупречный блик, чистый срез).
+   - Стойкость носки (долговечность 3-5 недель без потери формы).
+   - Ухоженный вид 24/7 (свежий образ без лишних effort).
+   - Комфорт и Leichtigkeit (невесомость состава, легкость).
+   - Архитектоника и геометрия (выразительность взгляда, правильные пропорции).
+`;
+
+const NO_CLICHE_BEFORE_RULES = `
+РАЗНООБРАЗИЕ И СТИЛЬ ОПИСАНИЯ БЛОКА «ДО»:
+1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ фразы: "натуральная база без...", "исходник — ...", "база без покрытия"!
+2. Используй стильное описание: "Работали с...", "Основной запрос — ...", "Оттенку не хватало...", "Форме требовалось обновление...".
+`;
+
+const FIRST_PARAGRAPH_RULES = `
+ПРАВИЛА ДЛЯ ПЕРВОГО АБЗАЦА ПОСЛЕ ЗАГОЛОВКА:
+1. ВАЖНО: Первое предложение после заголовка ОБЯЗАТЕЛЬНО ДОЛЖНО НАЧИНАТЬСЯ С ЗАГЛАВНОЙ БУКВЫ!
+2. Не затягивай вступление. Переходи к сути с первого предложения.
+`;
+
+const ABSURD_BAN_RULES = `
+ЖЕСТКИЙ ЗАПРЕТ НА ВЫДУМЫВАНИЕ ДАТ, СРОКОВ И КОЛИЧЕСТВА МЕСТ:
+1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать фразы вроде "Только 3 дня", "Успеют 5 человек", "Осталось 2 места", ЕСЛИ ЭТИХ ЦИФР НЕТ В ПОЛЕ "ДЕТАЛИ"!
+2. Если мастер указал только скидку (например, "10%"), пиши СТРОГО про скидку. Не добавляй от себя никакие ограничения по дням и людям.
+3. Используй только те цифры, проценты и условия, которые мастер ввел лично в поле деталей.
+`;
+
+const AIDA_OFFER_RULES = `
+ПРАВИЛА ДЛЯ АКЦИЙ И ПРОДАЮЩИХ ПОСТОВ:
+1. ВЫГОДА СРАЗУ: Суть акции понятна из заголовка и первого абзаца.
+2. ПРИЗЫВ К ДЕЙСТВИЮ: Четкий призыв записаться в Директ в конце.
+`;
+
+const UNIVERSAL_PROFESSIONAL_RULES = `
+УНИВЕРСАЛЬНЫЕ ПРАВИЛА ДЛЯ БЬЮТИ-СФЕРЫ:
+1. ЗАПРЕТ НА НЕГАТИВ В "ДО": Никаких "тусклые", "кривые", "уставшие", "запущенные"!
+2. ЛОГИКА ТЕРМИНОВ: Пиши строго в рамках одной ниши и одной выбранной техники.
+3. ПРОВЕРКА ОРФОГРАФИИ И СТАТИСТИКИ: Все слова должны быть написаны грамотно и ПОЛНОСТЬЮ. Любое упоминание скидок и процентов пиши ИСКЛЮЧИТЕЛЬНО знаком "%" (например, "10%"), а НЕ прописью ("10 процентов", "10 проц.").
+`;
+
+const SMM_RULES = `
+ЖЕСТКИЕ ПРАВИЛА СОВРЕМЕННОГО SMM:
+1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН Markdown! Никаких звездочек (**текст**) и решеток (#).
+2. ТЕКСТ ПИШИ СТРОГО СТРОЧНЫМИ БУКВАМИ (с заглавной только начало предложений). ЗАГЛАВНЫМИ — ТОЛЬКО заголовок!
+3. ОФОРМЛЕНИЕ ЗАГОЛОВКА: После заголовка ОБЯЗАТЕЛЬНО делай один пустой перенос строки.
+4. ЭМОДЗИ ОБЯЗАТЕЛЬНЫ: 2–3 эстетичных эмодзи (✨, 🤍, 💫, 🖤).
+5. СТРОГИЙ ЗАПРЕТ НА КАНЦЕЛЯРИТ: Без "подчеркивает анатомию", "в рамках предложения", "оптимизирует время". Пиши живым языком!
+6. ФОРМАТ АБЗАЦЕВ: Пиши естественными, связными абзацами.
+7. ЕДИНООБРАЗИЕ ОБРАЩЕНИЯ: Соблюдай строго единый стиль обращения во всем посте. Если тон "Дружелюбный", обращайся на "вы" во множественном числе ко всем подписчикам. Не смешивай "ты" и "вы"!
+
+${CRITICAL_PROMPT_PRIORITY}
+${NO_DIMINUTIVES_RULES}
+${BENEFIT_VARIETY_RULES}
+${NO_CLICHE_BEFORE_RULES}
+${ABSURD_BAN_RULES}
+${AIDA_OFFER_RULES}
+${UNIVERSAL_PROFESSIONAL_RULES}
+`;
+
+class HttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+type SB = SupabaseClient<Database>;
+
+function getSessionSupabase(): { supabase: SB; token: string } {
+  const authHeader = getRequestHeader("authorization") ?? getRequestHeader("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    throw new HttpError(401, "Требуется вход в аккаунт");
+  }
+  const token = authHeader.slice("Bearer ".length).trim();
+  if (!token || token.split(".").length !== 3) {
+    throw new HttpError(401, "Некорректный токен сессии");
+  }
+
+  const SUPABASE_URL = "https://axvjkqedrmdktnmppjjs.supabase.co";
+  const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_6cEBudyyZD0lfVuqdDz-jg_JavdQS3A";
+
+  const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+    global: {
+      headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_PUBLISHABLE_KEY },
+    },
+    auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
+  });
+  return { supabase, token };
+}
+
+async function consumeAttemptFromSession() {
+  const { supabase, token } = getSessionSupabase();
+  const { data: claimsData, error: claimsErr } = await supabase.auth.getClaims(token);
+  const userId = claimsData?.claims?.sub as string | undefined;
+  if (claimsErr || !userId) {
+    throw new HttpError(401, "Сессия недействительна");
+  }
+
+  const { data: remaining, error: rpcErr } = await supabase.rpc(
+    "consume_ai_attempt" as any,
+    { _user_id: userId },
+  );
+
+  if (rpcErr) {
+    if (rpcErr.message?.includes("NO_ATTEMPTS_LEFT") || (rpcErr as any).code === "P0001") {
+      throw new HttpError(
+        403,
+        "NO_ATTEMPTS_LEFT: бесплатные попытки закончились. Активируйте Premium.",
+      );
+    }
+    throw new HttpError(500, `Ошибка базы данных: ${rpcErr.message}`);
+  }
+
+  const remainingNum = typeof remaining === "number" ? remaining : Number(remaining);
+  return {
+    supabase,
+    userId,
+    remaining: remainingNum,
+    unlimited: remainingNum === -1,
+  };
+}
+
+async function refundAttempt(supabase: SB, userId: string) {
+  try {
+    await supabase.rpc("refund_ai_attempt" as any, { _user_id: userId });
+  } catch {}
+}
+
+function getDeepSeekApiKey(): string {
+  const key = process.env.DEEPSEEK_API_KEY;
+  if (!key) {
+    throw new HttpError(500, "AI конфигурация сломана: отсутствует DEEPSEEK_API_KEY");
+  }
+  return key;
+}
+
+// Оптимизированный вызов AI с быстрым ответом и контролем токенов
+async function callAI(messages: Array<{ role: string; content: string }>, expectJson = false, temperature = 0.8) {
+  const apiKey = getDeepSeekApiKey();
+
+  const res = await fetch("https://api.deepseek.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages,
+      temperature,
+      max_tokens: 600, // Жесткое ограничение длины вывода для моментального завершения
+      ...(expectJson ? { response_format: { type: "json_object" } } : {}),
+    }),
+  });
+
+  if (res.status === 429) throw new HttpError(429, "Превышен лимит запросов к DeepSeek. Попробуйте позже.");
+  if (res.status === 402) throw new HttpError(402, "На балансе DeepSeek кончились средства.");
+  if (!res.ok) throw new HttpError(res.status, `Ошибка DeepSeek API: ${await res.text()}`);
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
+async function runWithAttempt<T>(fn: () => Promise<T>): Promise<T & { remaining: number }> {
+  const ctx = await consumeAttemptFromSession();
+  try {
+    const result = await fn();
+    return { ...result, remaining: ctx.remaining } as T & { remaining: number };
+  } catch (err) {
+    await refundAttempt(ctx.supabase, ctx.userId);
+    throw err;
+  }
+}
+
+function cleanMarkdown(text: string): string {
+  let cleaned = text
+    .replace(/\*\*/g, "")
+    .replace(/\*/g, "")
+    .replace(/^#+\s*/gm, "")
+    .replace(/`/g, "")
+    .trim();
+
+  if (cleaned.includes("🛠 ДИАГНОСТИКА СИСТЕМЫ")) {
+    cleaned = cleaned.split("🛠 ДИАГНОСТИКА СИСТЕМЫ")[0].trim();
+  }
+  if (cleaned.includes("🛠 [1. VISION SERVICE]")) {
+    cleaned = cleaned.split("🛠 [1. VISION SERVICE]")[0].trim();
+  }
+
+  return cleaned;
+}
+
+// Пост-обработка: гарантия отсутствия оборванных слов, заглавной буквы после заголовка и корректных процентов
+function postProcessClean(text: string): string {
+  let cleaned = cleanMarkdown(text);
+  
+  // 1. Замена вариаций прописи процентов на знак %
+  cleaned = cleaned.replace(/(\d+)\s*(процентов|процента|процент|проц\.?)/gi, "$1%");
+
+  // 2. Делаем первую букву после заголовка заглавной
+  const lines = cleaned.split("\n");
+  if (lines.length > 1) {
+    for (let i = 1; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (trimmed.length > 0) {
+        lines[i] = lines[i].replace(/^(\s*)([а-яa-z])/u, (_, space, char) => space + char.toUpperCase());
+        break;
+      }
+    }
+  }
+  return lines.join("\n").trim();
+}
+
+const nicheSchema = z.string().trim().min(1).max(40).optional().default("beauty");
+const LINE_LIMITS: Record<string, number> = { short: 6, medium: 12, long: 18 };
+
+function enforceLineLimit(text: string, maxLines: number): string {
+  const lines = text
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .filter((l, i, arr) => !(l === "" && arr[i - 1] === ""));
+
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (lines.length <= maxLines) return lines.join("\n");
+
+  const trimmed = [...lines];
+  for (let i = trimmed.length - 2; i > 0 && trimmed.length > maxLines; i--) {
+    if (trimmed[i] === "") trimmed.splice(i, 1);
+  }
+  if (trimmed.length <= maxLines) return trimmed.join("\n");
+
+  const head = trimmed.slice(0, maxLines - 2);
+  const tail = trimmed[trimmed.length - 1];
+  return [...head, "", tail].join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+function isOfferPost(postType: string, details: string): boolean {
+  const t = `${postType} ${details}`.toLowerCase();
+  return /акц|скид|%|окош|свободн|запис|подар|дедлайн|последн|мест[оа]|сегодня|завтра|выходн|понедельник|вторник|сред|четверг|пятниц|суббот|воскрес|\d{1,2}[.:/]\d{1,2}|\d+\s*(₽|руб)/.test(
+    t,
+  );
+}
+
+// ==========================================
+// 1. ГЕНЕРАЦИЯ ПОСТА (РАЗДЕЛ «ТЕКСТ»)
+// ==========================================
+
+export const generatePost = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z.object({
+      niche: nicheSchema,
+      direction: z.string().trim().max(80).optional().default(""),
+      length: z.enum(["short", "medium", "long"]),
+      postType: z.string().trim().min(1).max(60),
+      tone: z.enum(["friendly", "professional", "emotional"]).optional().default("friendly"),
+      details: z.string().trim().max(500).optional().default(""),
+      rephraseSource: z.string().trim().max(6000).optional().default(""),
+    }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    return runWithAttempt(async () => {
+      const niche = data.niche;
+      const targetDirection = data.direction && data.direction.trim().length > 0 
+        ? data.direction 
+        : "услуги мастера";
+      const dynamicAngle = getRandomAngle();
+      const introStrategy = getRandomIntroStrategy();
+      const details = data.details?.trim() ?? "";
+      const offerMode = isOfferPost(data.postType, details);
+      const titleFormat = getRandomTitleFormat(offerMode);
+      const postTypeInstruction = POST_TYPE_INSTRUCTIONS[data.postType] || "";
+      const requestId = `${Math.random().toString(36).substring(7)}_${Date.now()}`;
+      const maxLines = LINE_LIMITS[data.length] ?? 12;
+      const sourceText = data.rephraseSource?.trim() ?? "";
+
+      // РЕЖИМ ПЕРЕФРАЗИРОВАНИЯ: работаем именно с уже сгенерированным текстом.
+      if (sourceText) {
+        const rephraseSystem = `Ты — профессиональный бьюти-копирайтер. Твоя задача — ПЕРЕФРАЗИРОВАТЬ готовый пост, а не писать новый.
+
+ПРАВИЛА ПЕРЕФРАЗИРОВАНИЯ:
+1. Сохрани смысл, структуру подачи и все факты исходного текста.
+2. Все конкретные данные (проценты скидок, цены, даты, дни, время, условия акции, количество мест, названия услуг) перенеси БЕЗ ИЗМЕНЕНИЙ.
+3. Ничего не добавляй от себя и ничего не выкидывай: новых фактов, услуг и обещаний быть не должно.
+4. Измени формулировки, порядок слов и заголовок так, чтобы текст читался свежо, но узнаваемо по смыслу.
+5. Стиль — ${TONE_HINT[data.tone]}
+6. Пиши все слова полностью, без сокращений и обрывов.
+7. ЖЁСТКИЙ ЛИМИТ: максимум ${maxLines} строк.
+${SMM_RULES}`;
+
+        const rephraseUser = `Перефразируй этот пост, сохранив смысл и все детали:
+
+"""
+${sourceText}
+"""
+
+Верни только готовый перефразированный текст. Request ID: ${requestId}`;
+
+        const rawRephrased = await callAI([
+          { role: "system", content: rephraseSystem },
+          { role: "user", content: rephraseUser },
+        ], false, 0.7);
+
+        const cleanedRephrased = postProcessClean(String(rawRephrased));
+        return { text: enforceLineLimit(cleanedRephrased, maxLines) };
+      }
+
+      const detailsBlock = details
+        ? `ОБЯЗАТЕЛЬНЫЕ ДЕТАЛИ ОТ МАСТЕРА (ДОСЛОВНО, БЕЗ ИСКАЖЕНИЙ): "${details}"
+- Все конкретные условия из деталей (процент скидки, сумма, подарок, условие «приведи подругу», даты, время, количество мест) обязаны попасть в текст В ТОЧНОМ ВИДЕ.
+- Ключевое условие ставится В ЗАГОЛОВКЕ ИЛИ В ПЕРВОМ АБЗАЦЕ.
+- Ничего из деталей не переформулируй в абстракцию.`
+        : `ДЕТАЛЕЙ ОТ МАСТЕРА НЕТ: не выдумывай проценты, цены, даты и количество мест.`;
+
+      const offerBlock = offerMode
+        ? `РЕЖИМ ОФФЕРА (АКЦИЯ / СКИДКА / СВОБОДНЫЕ ОКОШКИ):
+- Креативный заголовок должен отражать суть предложения, НО без заезженных "АКЦИЯ!".
+- ПЕРВАЯ СТРОЧКА ПОСЛЕ ЗАГОЛОВКА НЕ ДОЛЖНА ДУБЛИРОВАТЬ ЗАГОЛОВОК! Она раскрывает детали и условия.
+- Первая буква текста после заголовка — СТРОГО ЗАГЛАВНАЯ.
+- Запрещено начинать с общих слов про уход и блеск — сразу оффер и выгода.`
+        : "";
+
+      const system = `Ты — профессиональный бьюти-копирайтер. Пишешь от первого лица (как мастер) или через результат работы.
+
+Ниша: ${NICHE_LABEL[niche] ?? niche}.
+${TONE_HINT[data.tone]}
+
+СТРОГОЕ ТРЕБОВАНИЕ К ТИПУ ПОСТА ("${data.postType}"):
+${postTypeInstruction}
+
+УГОЛ ПОДАЧИ ДЛЯ ЭТОГО ПОСТА:
+${dynamicAngle}
+
+ФОРМАТ ЗАГОЛОВКА (СЛЕДУЙ ЕМУ КРЕАТИВНО):
+${titleFormat}
+
+ИНСТРУКЦИЯ ДЛЯ ВСТУПЛЕНИЯ:
+${introStrategy}
+
+${TITLE_VARIETY_RULES}
+${FIRST_PARAGRAPH_RULES}
+${SMM_RULES}
+
+ПРАВИЛА ДЛЯ ТЕКСТА:
+1. Заголовок и первый абзац НЕ ДОЛЖНЫ дублировать друг друга! Первое предложение раскрывает детали, а не повторяет заголовок.
+2. ВСЕ СЛОВА ПИШУТСЯ ПОЛНОСТЬЮ! Категорически запрещены обрывы и сокращения слов.
+3. Запрещены шаблоны: "Я подбираю...", "Я помогу вам...", "Каждая девушка мечтает...".
+
+${detailsBlock}
+
+${offerBlock}
+
+ПРИОРИТЕТ №1 (ДЕТАЛИ И ЗОНА):
+- Зона/Процедура: "${targetDirection}".
+- Тип поста: "${data.postType}".
+
+ОБЪЕМ (ЖЕСТКИЙ ЛИМИТ — МАКСИМУМ ${maxLines} СТРОК):
+${MOBILE_LENGTH_LIMITS[data.length]}`;
+
+      const user = `Сгенерируй пост:
+- Ниша: ${NICHE_LABEL[niche] ?? niche}
+- Направление / Зона: ${targetDirection}
+- Тип поста: ${data.postType}
+- ДЕТАЛИ / ТЕМА: ${details || "нет"}
+- Формат длины: ${data.length.toUpperCase()} (не более ${maxLines} строк)
+- Request ID: ${requestId}`;
+
+      const rawContent = await callAI([
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ], false, 0.85);
+
+      const cleanedText = postProcessClean(String(rawContent));
+      return { text: enforceLineLimit(cleanedText, maxLines) };
+    });
+  });
+
+// ==========================================
+// 2. ГЕНЕРАЦИЯ 5 ИДЕЙ (РАЗДЕЛ «ИДЕИ»)
+// ==========================================
+
+export const generateIdeas = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z.object({
+      niche: nicheSchema,
+      direction: z.string().trim().max(80).optional().default(""),
+    }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    return runWithAttempt(async () => {
+      const niche = data.niche;
+      const requestId = `${Math.random().toString(36).substring(7)}_${Date.now()}`;
+      const formats = pickManyRandom(IDEA_FORMATS, 5);
+
+      const system = `Ты — топовый SMM-стратег в бьюти-сфере. Придумай 5 РАЗНЫХ, живых и трендовых идей для постов бьюти-мастера.
+
+Ниша: ${NICHE_LABEL[niche] ?? niche}.
+
+ТРЕБОВАНИЯ К ИДЕЯМ:
+1. Каждая идея строго в своем формате:
+${formats.map((f, i) => `   - Идея ${i + 1}: ${f}`).join("\n")}
+2. Длина каждой идеи — строго от 8 до 14 слов!
+3. Живой язык, без канцелярита и без уменьшительно-ласкательных слов.
+4. Все слова должны быть написаны полностью, без обрывов.
+
+Формат вывода — строго JSON:
+{"ideas": ["Идея 1", "Идея 2", "Идея 3", "Идея 4", "Идея 5"]}`;
+
+      const user = data.direction 
+        ? `Направление / Зона мастера: ${data.direction}. Request ID: ${requestId}` 
+        : `Сгенерируй 5 трендовых идей для ниши. Request ID: ${requestId}`;
+
+      const content = await callAI(
+        [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        true,
+        0.85
+      );
+
+      try {
+        const parsed = JSON.parse(String(content));
+        const rawIdeas: string[] = Array.isArray(parsed.ideas) ? parsed.ideas.slice(0, 5) : [];
+        const ideas = rawIdeas.map((i) => postProcessClean(i));
+        return { ideas };
+      } catch {
+        return { ideas: [] };
+      }
+    });
+  });
+
+// ==========================================
+// 3. ОПИСАНИЕ ПО ФОТО И ДО/ПОСЛЕ (РАЗДЕЛ «ФОТО»)
+// ==========================================
+
+export const analyzePhoto = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z
+      .object({
+        niche: nicheSchema,
+        imageDataUrl: z.string().optional(),
+        beforeImageDataUrl: z.string().optional(),
+        afterImageDataUrl: z.string().optional(),
+        mode: z.enum(["describe", "before_after"]).optional().default("describe"),
+        wishes: z.string().trim().max(500).optional().default(""),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    return runWithAttempt(async () => {
+      const niche = data.niche;
+      const currentNicheLabel = NICHE_LABEL[niche] ?? niche;
+      const isBeforeAfter = data.mode === "before_after";
+      const userWishes = data.wishes ? data.wishes.trim() : "";
+      const requestId = `${Math.random().toString(36).substring(7)}_${Date.now()}`;
+
+      const imagesToAnalyze: string[] = [];
+      if (isBeforeAfter) {
+        if (data.beforeImageDataUrl) imagesToAnalyze.push(data.beforeImageDataUrl);
+        if (data.afterImageDataUrl) imagesToAnalyze.push(data.afterImageDataUrl);
+      } else {
+        const single = data.imageDataUrl || data.afterImageDataUrl;
+        if (single) imagesToAnalyze.push(single);
+      }
+
+      let photoDescription = "";
+
+      if (imagesToAnalyze.length > 0) {
+        const openRouterKey = process.env.OPENROUTER_API_KEY;
+        const geminiKey = process.env.GEMINI_API_KEY;
+
+        let targetModels = [
+          "google/gemini-2.0-flash-exp:free",
+          "meta-llama/llama-3.2-11b-vision-instruct:free",
+          "qwen/qwen-2-vl-7b-instruct:free",
+        ];
+
+        if (openRouterKey) {
+          try {
+            const modelsRes = await fetch("https://openrouter.ai/api/v1/models");
+            if (modelsRes.ok) {
+              const modelsData = await modelsRes.json();
+              const freeVisionFromApi = (modelsData.data || [])
+                .filter((m: any) => {
+                  const id = (m.id || "").toLowerCase();
+                  const isFree = id.endsWith(":free");
+                  const modalities = m.architecture?.input_modalities || [];
+                  const isVision = modalities.includes("image") || modalities.includes("vision");
+                  const isSafetyFilter = id.includes("safety") || id.includes("guard");
+                  
+                  return isFree && isVision && !isSafetyFilter;
+                })
+                .map((m: any) => m.id);
+
+              if (freeVisionFromApi.length > 0) {
+                targetModels = Array.from(new Set([...freeVisionFromApi, ...targetModels]));
+              }
+            }
+          } catch (e) {}
+
+          const visionPromptText = isBeforeAfter
+            ? `Опиши снимки работы бьюти-мастера в сфере "${currentNicheLabel}":
+1) Укажи точные факты о работе: техника, объем, форма, цвет, состояние исходника ДО и готовый результат ПОСЛЕ.
+2) Пиши исключительно нейтральные факты без субъективных оценок и оскорбительных ярлыков.`
+            : `Посмотри на фото работы для ниши "${currentNicheLabel}" и дай точные детали: цвет, форма, аккуратность выполнения, эффект, текстура.`;
+
+          const contentPayload: any[] = [{ type: "text", text: visionPromptText }];
+
+          for (const img of imagesToAnalyze) {
+            const fullDataUrl = img.startsWith("data:") ? img : `data:image/jpeg;base64,${img}`;
+            contentPayload.push({
+              type: "image_url",
+              image_url: { url: fullDataUrl },
+            });
+          }
+
+          for (const modelName of targetModels) {
+            try {
+              const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${openRouterKey}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  model: modelName,
+                  messages: [{ role: "user", content: contentPayload }],
+                }),
+              });
+
+              if (res.ok) {
+                const resData = await res.json();
+                const rawResponse = resData.choices?.[0]?.message?.content ?? "";
+                
+                if (rawResponse.trim().length > 0 && !rawResponse.toLowerCase().includes("user safety")) {
+                  photoDescription = rawResponse;
+                  break;
+                }
+              }
+            } catch (e) {}
+          }
+        }
+
+        if (!photoDescription && geminiKey) {
+          try {
+            const inlineDataParts = imagesToAnalyze.map((img) => {
+              const base64Data = img.includes(",") ? img.split(",")[1] : img;
+              return { inline_data: { mime_type: "image/jpeg", data: base64Data } };
+            });
+
+            const promptText = isBeforeAfter 
+              ? `Опиши детали работы ДО и ПОСЛЕ для сферы "${currentNicheLabel}". Пиши факты без оценочной драмы.`
+              : `Опиши детали снимка работы для сферы "${currentNicheLabel}".`;
+
+            const payload = { contents: [{ parts: [{ text: promptText }, ...inlineDataParts] }] };
+
+            const googleUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
+            const res = await fetch(googleUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+
+            if (res.ok) {
+              const resData = await res.json();
+              photoDescription = resData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+            }
+          } catch (e) {}
+        }
+      }
+
+      const hasVisionFacts = Boolean(photoDescription && photoDescription.trim().length > 0);
+
+      if (isBeforeAfter) {
+        const systemBeforeAfter = `Ты — мастер в сфере "${currentNicheLabel}". Составь профессиональный, честный и красивый пост "ДО / ПОСЛЕ".
+${SMM_RULES}
+${TITLE_VARIETY_RULES}
+
+СТРОГОЕ ОГРАНИЧЕНИЕ ПО ЗОНЕ И НИШЕ:
+- Пиши ИСКЛЮЧИТЕЛЬНО про услугу/зону: "${userWishes || currentNicheLabel}". Игнорируй другие детали или зоны, если они случайно попали в кадр.
+
+ТОН, ЯЗЫК И АДРЕСАЦИЯ:
+- Пиши СТРОГО НА РУССКОМ ЯЗЫКЕ. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ английские слова, узкий профессиональный сленг и жаргонизмы (например: black & grey, fill, grey wash, скроллы). Заменяй их на понятные человеку описания: "черно-белый стиль", "плотный закрас", "мягкие тени", "узоры".
+- Запрещен отчётный и технический формат (фразы вроде "Основной запрос —", "Заказ был", "Техническое задание").
+- Пиши пост для аудитории блога. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ фразы "вы получили", "мы вам сделали", "ваша кожа/волосы"!
+- Используй естественное описание работы: "В работе использовали...", "Результат — ...", "Выполнили...", "Работа сделана в технике...".
+- Первое предложение после заголовка — СТРОГО С ЗАГЛАВНОЙ БУКВЫ.
+- Все слова пишутся ПОЛНОСТЬЮ, без сокращений.
+
+СТРУКТУРА ПОСТА:
+1. Заголовок ЗАГЛАВНЫМИ БУКВАМИ + эмодзи (строго по правилам TITLE_VARIETY_RULES).
+2. Пустая строка.
+3. ДО: Описание исходного состояния (1 предложение по правилам NO_CLICHE_BEFORE_RULES).
+4. ПОСЛЕ: Описание готового результата и техники (2 коротких предложения).
+5. Польза/Стойкость: 1 предложение о пользе (строго выбери 1 ценность по правилам BENEFIT_VARIETY_RULES).
+6. Пустая строка.
+7. Призыв записаться в Директ (1 предложение).
+
+${userWishes ? `УСЛУГА/ЗОНА ОТ МАСТЕРА: "${userWishes}".` : ""}
+${hasVisionFacts ? `ФАКТЫ С ФОТО: ${photoDescription}` : ""}`;
+
+        const rawContent = await callAI([
+          { role: "system", content: systemBeforeAfter },
+          { role: "user", content: `Сгенерируй пост До/После. Ниша: ${currentNicheLabel}. Услуга: ${userWishes || currentNicheLabel}. Request ID: ${requestId}` },
+        ], false, 0.85);
+
+        return { text: postProcessClean(String(rawContent)) };
+      }
+
+      const systemDescribe = `Ты — мастер в сфере "${currentNicheLabel}". Составь понятный, эстетичный пост к фото работы.
+${SMM_RULES}
+${TITLE_VARIETY_RULES}
+
+СТРОГОЕ ОГРАНИЧЕНИЕ ПО ЗОНЕ И НИШЕ:
+- Главный приоритет — детали от мастера ("${userWishes}"). 
+- Пиши строго в логике и ценностях ниши "${currentNicheLabel}".
+
+ЯЗЫК И СТИЛЬ:
+- Пиши СТРОГО НА РУССКОМ ЯЗЫКЕ. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ английские слова, узкий сленг и сухие термины (например: black & grey, fill, grey wash, скроллы). Пиши простым, красивым языком для клиентов.
+- Запрещен канцелярит и отчётные фразы вроде "Основной запрос —", "Задача состояла в".
+- Первое предложение после заголовка — СТРОГО С ЗАГЛАВНОЙ БУКВЫ.
+- Все слова пишутся ПОЛНОСТЬЮ, без обрывов.
+
+ОБЪЕМ ПОСТА И РАЗНООБРАЗИЕ:
+- Длина всего текста: от 380 до 480 символов с пробелами (9-12 строк).
+- Подчиняйся правилу BENEFIT_VARIETY_RULES для выгоды/результата.
+- Структура:
+  1. Заголовок ЗАГЛАВНЫМИ БУКВАМИ + эмодзи.
+  2. Пустая строка.
+  3. 2 коротких абзаца: профессиональное, но понятное клиенту описание результата, техники и ухода (по 2 предложения).
+  4. Пустая строка.
+  5. Полноценный вовлекающий призыв записаться в Директ (1-2 предложения).
+
+${userWishes ? `ОСНОВНОЙ АКЦЕНТ: "${userWishes}".` : ""}
+${hasVisionFacts ? `ФАКТЫ С ФОТО: ${photoDescription}` : `Сфера: ${currentNicheLabel}`}`;
+
+      const userText = `Составь пост к снимку. Детали: ${userWishes || photoDescription || currentNicheLabel}. Request ID: ${requestId}`;
+
+      const rawContent = await callAI([
+        { role: "system", content: systemDescribe },
+        { role: "user", content: userText },
+      ], false, 0.85);
+
+      return { text: postProcessClean(String(rawContent)) };
+    });
+  });
